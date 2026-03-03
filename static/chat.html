@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Knowledge OS Chat</title>
+<style>
+body { font-family: Arial; max-width: 700px; margin: 40px auto; }
+#chat { border:1px solid #ccc; padding:10px; height:400px; overflow:auto; }
+input { width:80%; padding:8px; }
+button { padding:8px; }
+.msg { margin:10px 0; }
+.user { font-weight:bold; }
+.bot { color:green; }
+</style>
+</head>
+<body>
+
+<h2>Knowledge OS</h2>
+
+<div id="chat"></div>
+
+<input id="q" placeholder="Ask something..." />
+<button onclick="ask()">Send</button>
+
+<script>
+async function ask() {
+  let q = document.getElementById("q").value;
+  document.getElementById("chat").innerHTML += `<div class='msg user'>You: ${q}</div>`;
+
+  let r = await fetch("/query", {
+    method:"POST",
+    headers:{
+      "Authorization":"Bearer change_me",
+      "Content-Type":"application/json"
+    },
+    body:JSON.stringify({question:q, scope:"personal"})
+  });
+
+  let data = await r.json();
+
+  document.getElementById("chat").innerHTML +=
+    `<div class='msg bot'>AI: ${data.answer}</div>`;
+
+  document.getElementById("q").value="";
+}
+</script>
+
+</body>
+</html>

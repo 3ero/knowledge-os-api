@@ -1,0 +1,1 @@
+This is my first knowledge OS document. Pinecone retrieval is working.
