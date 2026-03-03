@@ -3,33 +3,20 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
-from llama_cpp import Llama
 
 load_dotenv()
 
 API_BEARER_TOKEN = os.environ.get("API_BEARER_TOKEN", "change_me")
-
 PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
 PINECONE_INDEX = os.environ["PINECONE_INDEX"]
-EMBED_MODEL_NAME = os.environ.get("LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-
-LLM_MODEL_PATH = os.environ.get("LLM_MODEL_PATH", "models/qwen2.5-1.5b-instruct.Q4_K_M.gguf")
-LLM_CTX = int(os.environ.get("LLM_CTX", "4096"))
+MODEL_NAME = os.environ.get("LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 idx = pc.Index(PINECONE_INDEX)
-
-embedder = SentenceTransformer(EMBED_MODEL_NAME)
-
-llm = Llama(
-    model_path=LLM_MODEL_PATH,
-    n_ctx=LLM_CTX,
-    # n_threads left default; llama-cpp will pick something sensible
-)
+model = SentenceTransformer(MODEL_NAME)
 
 app = FastAPI()
 
@@ -44,26 +31,6 @@ def check_auth(auth: Optional[str]):
     token = auth.split(" ", 1)[1].strip()
     if token != API_BEARER_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
-
-def build_prompt(question: str, matches) -> str:
-    # Keep context compact so it fits in ctx window
-    context_blocks = []
-    for m in matches:
-        md = m.get("metadata", {}) or {}
-        text = (md.get("text") or "").strip()
-        title = (md.get("title") or "untitled").strip()
-        if text:
-            context_blocks.append(f"[{title}]\n{text}")
-
-    context = "\n\n".join(context_blocks)[:12000]  # simple cap
-
-    return (
-        "You are a helpful assistant. Answer the user's question using ONLY the context provided. "
-        "If the answer isn't in the context, say you don't know.\n\n"
-        f"Context:\n{context}\n\n"
-        f"Question: {question}\n"
-        "Answer:"
-    )
 
 @app.get("/health")
 def health():
@@ -83,13 +50,11 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     else:
         raise HTTPException(status_code=400, detail="scope must be personal|work|both")
 
-    qvec = embedder.encode([req.question], normalize_embeddings=True)[0].tolist()
+    qvec = model.encode([req.question], normalize_embeddings=True)[0].tolist()
     res = idx.query(vector=qvec, top_k=req.top_k, include_metadata=True, filter=filt)
 
-    matches = res.get("matches", []) or []
-
     sources = []
-    for m in matches:
+    for m in res.get("matches", []) or []:
         md = m.get("metadata", {}) or {}
         sources.append({
             "title": md.get("title"),
@@ -101,12 +66,7 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
             "snippet": (md.get("text","")[:400] + "...") if md.get("text") else None,
         })
 
-    prompt = build_prompt(req.question, matches)
-    out = llm(prompt, max_tokens=300, temperature=0.2, stop=["\n\nContext:", "\nContext:", "\nQuestion:"])
-    answer = (out["choices"][0]["text"] or "").strip()
+    # Retrieval-only answer (LLM runs locally on your Mac, not on Render)
+    answer = "Retrieved relevant sources from your knowledge base."
 
     return {"answer": answer, "scope_used": scope, "sources": sources}
-
-@app.get("/chat")
-def chat():
-    return FileResponse("static/chat.html")
