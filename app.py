@@ -7,8 +7,6 @@ import asyncio
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
@@ -25,33 +23,38 @@ idx = None
 model = None
 
 
-def load_heavy_resources():
-    global pc, idx, model
+def get_pinecone_indices():
+    global pc, idx
+    if pc is None or idx is None:
+        logger.info("Initialising Pinecone...")
+        try:
+            from pinecone import Pinecone
+            if PINECONE_API_KEY and PINECONE_INDEX:
+                pc = Pinecone(api_key=PINECONE_API_KEY)
+                idx = pc.Index(PINECONE_INDEX)
+                logger.info("Pinecone initialised successfully.")
+            else:
+                logger.warning("PINECONE_API_KEY or PINECONE_INDEX is missing. Pinecone not initialised.")
+        except Exception as e:
+            logger.error(f"Failed to initialise Pinecone: {e}")
+            raise HTTPException(status_code=503, detail=f"Pinecone init failed: {e}")
+    return pc, idx
 
-    logger.info("Initialising Pinecone...")
-    try:
-        if PINECONE_API_KEY and PINECONE_INDEX:
-            pc = Pinecone(api_key=PINECONE_API_KEY)
-            idx = pc.Index(PINECONE_INDEX)
-            logger.info("Pinecone initialised successfully.")
-        else:
-            logger.warning("PINECONE_API_KEY or PINECONE_INDEX is missing. Pinecone not initialised.")
-    except Exception as e:
-        logger.error(f"Failed to initialise Pinecone: {e}")
-
-    logger.info("Loading SentenceTransformer...")
-    try:
-        model = SentenceTransformer(MODEL_NAME)
-        logger.info(f"SentenceTransformer '{MODEL_NAME}' loaded successfully.")
-    except Exception as e:
-        logger.error(f"Failed to load SentenceTransformer: {e}")
-
+def get_embed_model():
+    global model
+    if model is None:
+        logger.info("Loading SentenceTransformer...")
+        try:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer(MODEL_NAME)
+            logger.info(f"SentenceTransformer '{MODEL_NAME}' loaded successfully.")
+        except Exception as e:
+            logger.error(f"Failed to load SentenceTransformer: {e}")
+            raise HTTPException(status_code=503, detail=f"Model load failed: {e}")
+    return model
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Scheduling heavy resources initialisation in the background...")
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, load_heavy_resources)
     yield
     logger.info("Shutting down...")
 
@@ -82,7 +85,11 @@ def health():
 def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     check_auth(authorization)
 
-    if model is None or idx is None:
+    # Lazy load on first request
+    _, current_idx = get_pinecone_indices()
+    current_model = get_embed_model()
+
+    if current_model is None or current_idx is None:
         raise HTTPException(
             status_code=503,
             detail="Search services (Model or VectorDB) are currently unavailable."
@@ -98,8 +105,8 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     else:
         raise HTTPException(status_code=400, detail="scope must be personal|work|both")
 
-    qvec = model.encode([req.question], normalize_embeddings=True)[0].tolist()
-    res = idx.query(vector=qvec, top_k=req.top_k, include_metadata=True, filter=filt)
+    qvec = current_model.encode([req.question], normalize_embeddings=True)[0].tolist()
+    res = current_idx.query(vector=qvec, top_k=req.top_k, include_metadata=True, filter=filt)
 
     sources = []
     for m in res.get("matches", []) or []:
