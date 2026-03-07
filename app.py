@@ -68,12 +68,19 @@ class QueryReq(BaseModel):
     top_k: int = 5
 
 
-def check_auth(auth: Optional[str]):
-    if not auth or not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
+def check_auth(auth: Optional[str] = None):
+    if not auth:
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format. Must be Bearer token")
     token = auth.split(" ", 1)[1].strip()
     if token != API_BEARER_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+
+@app.get("/")
+def root():
+    return {"message": "Knowledge OS API is running!", "version": "1.0.0"}
 
 
 @app.get("/health")
