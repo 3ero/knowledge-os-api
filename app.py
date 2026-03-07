@@ -89,6 +89,7 @@ def health():
 
 
 @app.post("/query")
+@app.post("//query")
 def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     check_auth(authorization)
 
