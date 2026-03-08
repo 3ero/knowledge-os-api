@@ -104,6 +104,13 @@ class QueryReq(BaseModel):
     scope: str = "personal"
     top_k: int = 2
 
+class IngestReq(BaseModel):
+    title: str
+    text: str
+    scope: str = "personal"
+    source_system: str = "api"
+    deep_link: str = ""
+
 def check_auth(auth: Optional[str] = None):
     if not auth:
         raise HTTPException(status_code=401, detail="Missing authorization header")
@@ -163,3 +170,71 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     # Return both `sources` and `results` arrays to be absolutely sure we don't 
     # fail OpenAPI parameter validation in ChatGPT Custom Actions
     return {"results": sources, "sources": sources}
+
+def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[str]:
+    text = text.strip()
+    if not text: return []
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + chunk_size)
+        chunks.append(text[start:end])
+        if end == len(text):
+            break
+        start = max(0, end - overlap)
+    return chunks
+
+@app.post("/ingest")
+def ingest(req: IngestReq, authorization: Optional[str] = Header(default=None)):
+    check_auth(authorization)
+    _, current_idx = get_pinecone_indices()
+    current_openai = get_openai_client()
+    if current_openai is None or current_idx is None:
+        raise HTTPException(status_code=503, detail="Services unavailable.")
+    
+    scope = req.scope.lower().strip()
+    if scope not in {"personal", "work"}:
+        raise HTTPException(status_code=400, detail="scope must be personal|work")
+
+    chunks = chunk_text(req.text)
+    if not chunks:
+        return {"status": "ok", "chunks_upserted": 0, "message": "No text provided"}
+
+    import hashlib
+    from datetime import datetime, timezone
+    
+    now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    
+    # Stable doc ID base
+    h = hashlib.sha256()
+    h.update(req.title.encode("utf-8"))
+    h.update(now_iso.encode("utf-8"))
+    doc_id = h.hexdigest()[:24]
+
+    try:
+        # Embed all chunks at once
+        emb = current_openai.embeddings.create(model=MODEL_NAME, input=chunks)
+    except Exception as e:
+        logger.error(f"OpenAI Embedding failed during ingest: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate embeddings: {e}")
+
+    vectors = []
+    for i, item in enumerate(emb.data):
+        vector_id = f"{doc_id}:{i}"
+        vectors.append({
+            "id": vector_id,
+            "values": item.embedding,
+            "metadata": {
+                "scope": scope,
+                "source_system": req.source_system,
+                "title": req.title,
+                "deep_link": req.deep_link,
+                "modified_at": now_iso,
+                "doc_id": doc_id,
+                "chunk_index": i,
+                "text": chunks[i][:2000], 
+            }
+        })
+    
+    current_idx.upsert(vectors=vectors)
+    return {"status": "ok", "doc_id": doc_id, "chunks_upserted": len(vectors)}
