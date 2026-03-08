@@ -113,21 +113,24 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     else:
         raise HTTPException(status_code=400, detail="scope must be personal|work|both")
 
+    # Enforce a strict max on top_k so ChatGPT cannot request 50 documents
+    actual_top_k = min(req.top_k, 5)
+    
     qvec = current_model.encode([req.question], normalize_embeddings=True)[0].tolist()
-    res = current_idx.query(vector=qvec, top_k=req.top_k, include_metadata=True, filter=filt)
+    res = current_idx.query(vector=qvec, top_k=actual_top_k, include_metadata=True, filter=filt)
 
     sources = []
     for m in res.get("matches", []) or []:
         md = m.get("metadata", {}) or {}
         sources.append({
-            "title": md.get("title"),
+            "title": (md.get("title", "")[:200] + "...") if md.get("title") and len(md.get("title", "")) > 200 else md.get("title"),
             "deep_link": md.get("deep_link"),
             "source_system": md.get("source_system"),
             "scope": md.get("scope"),
             "modified_at": md.get("modified_at"),
             "score": m.get("score"),
-            # Truncate strictly to 1500 characters to prevent OpenAI ResponseTooLargeError
-            "snippet": (md.get("text", "")[:1500] + "...") if len(md.get("text", "")) > 1500 else md.get("text"),
+            # Truncate strictly to 500 characters to prevent OpenAI ResponseTooLargeError
+            "snippet": (md.get("text", "")[:500] + "...") if len(md.get("text", "")) > 500 else md.get("text"),
         })
 
     return {"answer": "Retrieved relevant sources from your knowledge base.", "scope_used": scope, "sources": sources}
