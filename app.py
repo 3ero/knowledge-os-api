@@ -138,7 +138,7 @@ def root():
 def health():
     return {"status": "ok"}
 
-@app.post("/query")
+@app.post("/query", responses={422: {"description": "Validation Error"}})
 def query(request: Request, req: QueryReq):
     authorization = request.headers.get("Authorization")
     check_auth(authorization)
@@ -195,7 +195,7 @@ def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[st
         start = max(0, end - overlap)
     return chunks
 
-@app.post("/ingest")
+@app.post("/ingest", responses={422: {"description": "Validation Error"}})
 def ingest(request: Request, req: IngestReq):
     authorization = request.headers.get("Authorization")
     check_auth(authorization)
