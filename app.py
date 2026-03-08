@@ -13,11 +13,12 @@ logger = logging.getLogger(__name__)
 API_BEARER_TOKEN = os.environ.get("API_BEARER_TOKEN", "change_me")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
 PINECONE_INDEX = os.environ.get("PINECONE_INDEX")
-MODEL_NAME = os.environ.get("LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+MODEL_NAME = os.environ.get("EMBED_MODEL", "text-embedding-3-small")
 
 pc = None
 idx = None
-model = None
+openai_client = None
 
 def get_pinecone_indices():
     global pc, idx
@@ -36,24 +37,27 @@ def get_pinecone_indices():
             raise HTTPException(status_code=503, detail=f"Pinecone init failed: {e}")
     return pc, idx
 
-def get_embed_model():
-    global model
-    if model is None:
-        logger.info("Loading SentenceTransformer...")
+def get_openai_client():
+    global openai_client
+    if openai_client is None:
+        logger.info("Initializing OpenAI client...")
         try:
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(MODEL_NAME)
-            logger.info(f"SentenceTransformer '{MODEL_NAME}' loaded.")
+            from openai import OpenAI
+            if OPENAI_API_KEY:
+                openai_client = OpenAI(api_key=OPENAI_API_KEY)
+                logger.info(f"OpenAI client loaded. Using model: {MODEL_NAME}")
+            else:
+                logger.warning("OPENAI_API_KEY is missing.")
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
-            raise HTTPException(status_code=503, detail=f"Model load failed: {e}")
-    return model
+            raise HTTPException(status_code=503, detail=f"OpenAI load failed: {e}")
+    return openai_client
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up: pre-warming ML models and Vector API connections...")
     get_pinecone_indices()
-    get_embed_model()
+    get_openai_client()
     yield
     logger.info("Shutting down...")
 
@@ -85,9 +89,10 @@ def health():
 def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     check_auth(authorization)
     _, current_idx = get_pinecone_indices()
-    current_model = get_embed_model()
-    if current_model is None or current_idx is None:
+    current_openai = get_openai_client()
+    if current_openai is None or current_idx is None:
         raise HTTPException(status_code=503, detail="Services unavailable.")
+    
     scope = req.scope.lower().strip()
     if scope == "personal":
         filt = {"scope": "personal"}
@@ -97,9 +102,17 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
         filt = {"scope": {"$in": ["personal", "work"]}}
     else:
         raise HTTPException(status_code=400, detail="scope must be personal|work|both")
+    
     # Allow up to 5 results to give ChatGPT enough context without going crazy
     actual_top_k = min(req.top_k, 5) if req.top_k > 0 else 5
-    qvec = current_model.encode([req.question], normalize_embeddings=True)[0].tolist()
+    
+    try:
+        embed_res = current_openai.embeddings.create(input=[req.question], model=MODEL_NAME)
+        qvec = embed_res.data[0].embedding
+    except Exception as e:
+        logger.error(f"OpenAI Embedding failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate embedding: {e}")
+
     res = current_idx.query(vector=qvec, top_k=actual_top_k, include_metadata=True, filter=filt)
     sources = []
     for m in res.get("matches", []) or []:
