@@ -4,5 +4,6 @@ set -o errexit
 
 pip install -r requirements.txt
 
-# Temporarily skipping model download step so the deploy succeeds, allowing the user to upgrade the instance.
-# python -c "from sentence_transformers import SentenceTransformer; import os; SentenceTransformer(os.environ.get('LOCAL_EMBED_MODEL', 'all-MiniLM-L6-v2'))"
+# Download model during build-time so it's baked into the image
+# This prevents OpenAI from hitting a 45-second timeout on the first request
+python -c "from sentence_transformers import SentenceTransformer; import os; SentenceTransformer(os.environ.get('LOCAL_EMBED_MODEL', 'all-MiniLM-L6-v2'))"
