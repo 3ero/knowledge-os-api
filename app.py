@@ -3,7 +3,7 @@ import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 load_dotenv()
@@ -139,7 +139,8 @@ def health():
     return {"status": "ok"}
 
 @app.post("/query")
-def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
+def query(request: Request, req: QueryReq):
+    authorization = request.headers.get("Authorization")
     check_auth(authorization)
     _, current_idx = get_pinecone_indices()
     current_openai = get_openai_client()
@@ -195,7 +196,8 @@ def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[st
     return chunks
 
 @app.post("/ingest")
-def ingest(req: IngestReq, authorization: Optional[str] = Header(default=None)):
+def ingest(request: Request, req: IngestReq):
+    authorization = request.headers.get("Authorization")
     check_auth(authorization)
     _, current_idx = get_pinecone_indices()
     current_openai = get_openai_client()
