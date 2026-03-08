@@ -126,7 +126,8 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
             "scope": md.get("scope"),
             "modified_at": md.get("modified_at"),
             "score": m.get("score"),
-            "snippet": (md.get("text", "")[:400] + "...") if md.get("text") else None,
+            # Truncate strictly to 1500 characters to prevent OpenAI ResponseTooLargeError
+            "snippet": (md.get("text", "")[:1500] + "...") if len(md.get("text", "")) > 1500 else md.get("text"),
         })
 
     return {"answer": "Retrieved relevant sources from your knowledge base.", "scope_used": scope, "sources": sources}
