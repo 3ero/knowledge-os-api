@@ -12,7 +12,7 @@ class Handler(FileSystemEventHandler):
             return
         if event.src_path.endswith((".txt", ".md")):
             print(f"New file detected: {event.src_path}")
-            subprocess.run(["python3", "ingest_manual_local.py"])
+            subprocess.run(["python3", "ingest_manual.py"])
 
 if __name__ == "__main__":
     print("Watching for new documents in:", WATCH_DIR)

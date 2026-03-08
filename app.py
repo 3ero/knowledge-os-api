@@ -20,6 +20,41 @@ pc = None
 idx = None
 openai_client = None
 
+def verify_and_migrate_pinecone_index(pc, index_name):
+    import time
+    try:
+        existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
+        if index_name in existing_indexes:
+            idx_info = pc.describe_index(index_name)
+            current_dim = getattr(idx_info, 'dimension', idx_info.get('dimension', 0))
+            if current_dim == 1536:
+                logger.info(f"Pinecone index '{index_name}' already has dimension 1536. No migration needed.")
+                return idx_info.spec
+
+            logger.warning(f"Pinecone index '{index_name}' has dimension {current_dim}. Migrating to 1536...")
+            old_spec = idx_info.spec
+            pc.delete_index(index_name)
+            
+            while index_name in [info["name"] for info in pc.list_indexes()]:
+                logger.info("Waiting for old index deletion...")
+                time.sleep(2)
+        else:
+            from pinecone import ServerlessSpec
+            old_spec = ServerlessSpec(cloud="aws", region="us-east-1")
+            
+        logger.info(f"Creating new Pinecone index '{index_name}' with dimension 1536...")
+        pc.create_index(
+            name=index_name,
+            dimension=1536,
+            metric="cosine",
+            spec=old_spec
+        )
+        while not pc.describe_index(index_name).status['ready']:
+            time.sleep(2)
+        logger.info(f"Index '{index_name}' created successfully.")
+    except Exception as e:
+        logger.error(f"Failed to verify/migrate Pinecone index: {e}")
+
 def get_pinecone_indices():
     global pc, idx
     if pc is None or idx is None:
@@ -28,6 +63,7 @@ def get_pinecone_indices():
             from pinecone import Pinecone
             if PINECONE_API_KEY and PINECONE_INDEX:
                 pc = Pinecone(api_key=PINECONE_API_KEY)
+                verify_and_migrate_pinecone_index(pc, PINECONE_INDEX)
                 idx = pc.Index(PINECONE_INDEX)
                 logger.info("Pinecone initialised successfully.")
             else:
