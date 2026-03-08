@@ -3,7 +3,8 @@ import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 load_dotenv()
@@ -121,14 +122,14 @@ class IngestReq(BaseModel):
     source_system: str = "api"
     deep_link: str = ""
 
-def check_auth(auth: Optional[str] = None):
-    if not auth:
-        raise HTTPException(status_code=401, detail="Missing authorization header")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization format")
-    token = auth.split(" ", 1)[1].strip()
-    if token != API_BEARER_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid bearer token")
+security = HTTPBearer()
+
+def check_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if credentials.scheme != "Bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+    if credentials.credentials != API_BEARER_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return credentials.credentials
 
 @app.get("/")
 def root():
@@ -139,9 +140,7 @@ def health():
     return {"status": "ok"}
 
 @app.post("/query", responses={422: {"description": "Validation Error"}})
-def query(request: Request, req: QueryReq):
-    authorization = request.headers.get("Authorization")
-    check_auth(authorization)
+def query(request: Request, req: QueryReq, token: str = Depends(check_auth)):
     _, current_idx = get_pinecone_indices()
     current_openai = get_openai_client()
     if current_openai is None or current_idx is None:
@@ -196,9 +195,7 @@ def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[st
     return chunks
 
 @app.post("/ingest", responses={422: {"description": "Validation Error"}})
-def ingest(request: Request, req: IngestReq):
-    authorization = request.headers.get("Authorization")
-    check_auth(authorization)
+def ingest(request: Request, req: IngestReq, token: str = Depends(check_auth)):
     _, current_idx = get_pinecone_indices()
     current_openai = get_openai_client()
     if current_openai is None or current_idx is None:
