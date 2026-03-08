@@ -7,7 +7,6 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,6 @@ pc = None
 idx = None
 model = None
 
-
 def get_pinecone_indices():
     global pc, idx
     if pc is None or idx is None:
@@ -32,12 +30,11 @@ def get_pinecone_indices():
                 idx = pc.Index(PINECONE_INDEX)
                 logger.info("Pinecone initialised successfully.")
             else:
-                logger.warning("PINECONE_API_KEY or PINECONE_INDEX is missing. Pinecone not initialised.")
+                logger.warning("PINECONE_API_KEY or PINECONE_INDEX is missing.")
         except Exception as e:
             logger.error(f"Failed to initialise Pinecone: {e}")
             raise HTTPException(status_code=503, detail=f"Pinecone init failed: {e}")
     return pc, idx
-
 
 def get_embed_model():
     global model
@@ -46,61 +43,48 @@ def get_embed_model():
         try:
             from sentence_transformers import SentenceTransformer
             model = SentenceTransformer(MODEL_NAME)
-            logger.info(f"SentenceTransformer '{MODEL_NAME}' loaded successfully.")
+            logger.info(f"SentenceTransformer '{MODEL_NAME}' loaded.")
         except Exception as e:
-            logger.error(f"Failed to load SentenceTransformer: {e}")
+            logger.error(f"Failed to load model: {e}")
             raise HTTPException(status_code=503, detail=f"Model load failed: {e}")
     return model
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down...")
 
-
 app = FastAPI(lifespan=lifespan)
-
 
 class QueryReq(BaseModel):
     question: str
-    scope: str = "personal"  # personal|work|both
-    top_k: int = 3  # default 3, hard cap at 3 to prevent ResponseTooLargeError
-
+    scope: str = "personal"
+    top_k: int = 2
 
 def check_auth(auth: Optional[str] = None):
     if not auth:
         raise HTTPException(status_code=401, detail="Missing authorization header")
     if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization format. Must be Bearer token")
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
     token = auth.split(" ", 1)[1].strip()
     if token != API_BEARER_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
 
-
 @app.get("/")
 def root():
-    return {"message": "Knowledge OS API is running!", "version": "1.0.0"}
-
+    return {"status": "ok"}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-
 @app.post("/query")
 def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     check_auth(authorization)
-
     _, current_idx = get_pinecone_indices()
     current_model = get_embed_model()
-
     if current_model is None or current_idx is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Search services (Model or VectorDB) are currently unavailable."
-        )
-
+        raise HTTPException(status_code=503, detail="Services unavailable.")
     scope = req.scope.lower().strip()
     if scope == "personal":
         filt = {"scope": "personal"}
@@ -110,28 +94,15 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
         filt = {"scope": {"$in": ["personal", "work"]}}
     else:
         raise HTTPException(status_code=400, detail="scope must be personal|work|both")
-
-    # Hard cap top_k at 3 to prevent ResponseTooLargeError
-    actual_top_k = min(req.top_k, 3)
-
+    actual_top_k = min(req.top_k, 2)
     qvec = current_model.encode([req.question], normalize_embeddings=True)[0].tolist()
     res = current_idx.query(vector=qvec, top_k=actual_top_k, include_metadata=True, filter=filt)
-
     sources = []
     for m in res.get("matches", []) or []:
         md = m.get("metadata", {}) or {}
-        raw_text = md.get("text", "") or ""
-        title = md.get("title", "") or ""
         sources.append({
-            "title": title[:100],
-            "deep_link": md.get("deep_link"),
-            "scope": md.get("scope"),
-            "score": round(m.get("score", 0), 3),
-            # Strict 200-char snippet to keep total response well under OpenAI's limit
-            "snippet": raw_text[:200],
+            "title": (md.get("title") or "")[:80],
+            "snippet": (md.get("text") or "")[:100],
+            "link": md.get("deep_link"),
         })
-
-    return {
-        "scope_used": scope,
-        "sources": sources
-    }
+    return {"results": sources}
