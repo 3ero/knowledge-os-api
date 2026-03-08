@@ -51,6 +51,9 @@ def get_embed_model():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Starting up: pre-warming ML models and Vector API connections...")
+    get_pinecone_indices()
+    get_embed_model()
     yield
     logger.info("Shutting down...")
 
@@ -94,15 +97,20 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
         filt = {"scope": {"$in": ["personal", "work"]}}
     else:
         raise HTTPException(status_code=400, detail="scope must be personal|work|both")
-    actual_top_k = min(req.top_k, 2)
+    # Allow up to 5 results to give ChatGPT enough context without going crazy
+    actual_top_k = min(req.top_k, 5) if req.top_k > 0 else 5
     qvec = current_model.encode([req.question], normalize_embeddings=True)[0].tolist()
     res = current_idx.query(vector=qvec, top_k=actual_top_k, include_metadata=True, filter=filt)
     sources = []
     for m in res.get("matches", []) or []:
         md = m.get("metadata", {}) or {}
         sources.append({
-            "title": (md.get("title") or "")[:80],
-            "snippet": (md.get("text") or "")[:100],
+            "title": (md.get("title") or "")[:200],
+            "snippet": (md.get("text") or "")[:1500],
             "link": md.get("deep_link"),
+            "score": m.get("score"),
+            "scope": md.get("scope"),
         })
-    return {"results": sources}
+    # Return both `sources` and `results` arrays to be absolutely sure we don't 
+    # fail OpenAPI parameter validation in ChatGPT Custom Actions
+    return {"results": sources, "sources": sources}
