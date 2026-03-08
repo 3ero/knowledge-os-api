@@ -1,10 +1,6 @@
 import os
 import logging
-from typing import Optional
-from contextlib import asynccontextmanager
-from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 load_dotenv()
@@ -122,14 +118,14 @@ class IngestReq(BaseModel):
     source_system: str = "api"
     deep_link: str = ""
 
-security = HTTPBearer()
-
-def check_auth(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.scheme != "Bearer":
-        raise HTTPException(status_code=401, detail="Invalid authentication scheme")
-    if credentials.credentials != API_BEARER_TOKEN:
+def check_auth(auth: Optional[str] = None):
+    if not auth:
+        raise HTTPException(status_code=401, detail="Missing authorization header")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+    token = auth.split(" ", 1)[1].strip()
+    if token != API_BEARER_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
-    return credentials.credentials
 
 @app.get("/")
 def root():
@@ -140,7 +136,7 @@ def health():
     return {"status": "ok"}
 
 @app.post("/query")
-def query(req: QueryReq, token: str = Depends(check_auth)):
+def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     check_auth(authorization)
     _, current_idx = get_pinecone_indices()
     current_openai = get_openai_client()
@@ -196,7 +192,7 @@ def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[st
     return chunks
 
 @app.post("/ingest")
-def ingest(req: IngestReq, token: str = Depends(check_auth)):
+def ingest(req: IngestReq, authorization: Optional[str] = Header(default=None)):
     check_auth(authorization)
     _, current_idx = get_pinecone_indices()
     current_openai = get_openai_client()
