@@ -97,7 +97,17 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down...")
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    title="Knowledge OS API",
+    version="1.0.0",
+    servers=[
+        {
+            "url": "https://knowledge-os-api.onrender.com",
+            "description": "Production Server"
+        }
+    ]
+)
 
 class QueryReq(BaseModel):
     question: str
