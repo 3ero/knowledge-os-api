@@ -2,8 +2,6 @@ import os
 import logging
 from typing import Optional
 from contextlib import asynccontextmanager
-import asyncio
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -40,6 +38,7 @@ def get_pinecone_indices():
             raise HTTPException(status_code=503, detail=f"Pinecone init failed: {e}")
     return pc, idx
 
+
 def get_embed_model():
     global model
     if model is None:
@@ -53,6 +52,7 @@ def get_embed_model():
             raise HTTPException(status_code=503, detail=f"Model load failed: {e}")
     return model
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
@@ -65,7 +65,7 @@ app = FastAPI(lifespan=lifespan)
 class QueryReq(BaseModel):
     question: str
     scope: str = "personal"  # personal|work|both
-    top_k: int = 5
+    top_k: int = 3  # default 3, hard cap at 3 to prevent ResponseTooLargeError
 
 
 def check_auth(auth: Optional[str] = None):
@@ -89,11 +89,9 @@ def health():
 
 
 @app.post("/query")
-@app.post("//query")
 def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     check_auth(authorization)
 
-    # Lazy load on first request
     _, current_idx = get_pinecone_indices()
     current_model = get_embed_model()
 
@@ -113,24 +111,27 @@ def query(req: QueryReq, authorization: Optional[str] = Header(default=None)):
     else:
         raise HTTPException(status_code=400, detail="scope must be personal|work|both")
 
-    # Enforce a strict max on top_k so ChatGPT cannot request 50 documents
-    actual_top_k = min(req.top_k, 5)
-    
+    # Hard cap top_k at 3 to prevent ResponseTooLargeError
+    actual_top_k = min(req.top_k, 3)
+
     qvec = current_model.encode([req.question], normalize_embeddings=True)[0].tolist()
     res = current_idx.query(vector=qvec, top_k=actual_top_k, include_metadata=True, filter=filt)
 
     sources = []
     for m in res.get("matches", []) or []:
         md = m.get("metadata", {}) or {}
+        raw_text = md.get("text", "") or ""
+        title = md.get("title", "") or ""
         sources.append({
-            "title": (md.get("title", "")[:200] + "...") if md.get("title") and len(md.get("title", "")) > 200 else md.get("title"),
+            "title": title[:100],
             "deep_link": md.get("deep_link"),
-            "source_system": md.get("source_system"),
             "scope": md.get("scope"),
-            "modified_at": md.get("modified_at"),
-            "score": m.get("score"),
-            # Truncate strictly to 500 characters to prevent OpenAI ResponseTooLargeError
-            "snippet": (md.get("text", "")[:500] + "...") if len(md.get("text", "")) > 500 else md.get("text"),
+            "score": round(m.get("score", 0), 3),
+            # Strict 200-char snippet to keep total response well under OpenAI's limit
+            "snippet": raw_text[:200],
         })
 
-    return {"answer": "Retrieved relevant sources from your knowledge base.", "scope_used": scope, "sources": sources}
+    return {
+        "scope_used": scope,
+        "sources": sources
+    }
